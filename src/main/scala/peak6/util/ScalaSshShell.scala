@@ -24,7 +24,8 @@ import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider
 import org.apache.sshd.server.{PasswordAuthenticator, Command}
 import org.apache.sshd.common.Factory
 import scala.reflect.Manifest
-import scala.concurrent.ops.spawn
+import scala.concurrent._
+import ExecutionContext.Implicits.global
 
 class ScalaSshShell(val port: Int, val name: String,
                     val user: String, val passwd: String,
@@ -56,13 +57,13 @@ trait Shell {
   lazy val sshd = {
     val x = org.apache.sshd.SshServer.setUpDefaultServer()
     x.setPort(port)
-    x.setReuseAddress(true)
+    //x.setReuseAddress(true)
     x.setPasswordAuthenticator(auth)
     x.setKeyPairProvider(keyPairProvider)
     x.setShellFactory(new ShellFactory)
     x
   }
-
+  import scala.collection.JavaConversions._
   lazy val keyPairProvider =
     keysResourcePath.map {
       case krp =>
@@ -82,9 +83,9 @@ trait Shell {
             val get = doReadKeyPair(in)
           }.get
 
-          override def getKeyTypes() = getKeyType(pair)
+          //override def getKeyTypes() = getKeyType(pair)
           override def loadKey(s:String) = pair
-          def loadKeys() = Array[java.security.KeyPair]()
+          def loadKeys() = Seq[java.security.KeyPair]()
         }
     }.getOrElse(new SimpleGeneratorHostKeyProvider())
 
@@ -204,7 +205,7 @@ object ScalaSshShell {
                                  keysResourcePath=Some("/test.ssh.keys"))
     sshd.bind("pi", 3.1415926)
     sshd.bind("nums", Vector(1,2,3,4,5))
-    spawn {
+    future {
       sshd.start()
     }
     //new java.util.Scanner(System.in) nextLine()

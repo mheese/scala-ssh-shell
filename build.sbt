@@ -6,7 +6,7 @@ version := "0.0.1-SNAPSHOT"
 
 scalaVersion := "2.10.3"
 
-scalacOptions ++= Seq("-unchecked", "-deprecation", "-feature")
+scalacOptions ++= Seq("-unchecked", "-deprecation", "-feature", "-Ywarn-all")
 
 javacOptions ++= Seq("-encoding", "UTF-8")
 

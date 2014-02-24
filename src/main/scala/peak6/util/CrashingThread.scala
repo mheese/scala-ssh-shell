@@ -37,7 +37,7 @@ extends Thread() with grizzled.slf4j.Logging {
 	val stack = e.getStackTrace.foldLeft (new StringBuilder()) {
 	  (sb, f) =>
 	    sb.append("  ")
-	    sb.append(f toString)
+	    sb.append(f.toString)
             sb += '\n'
 	}.toString
         logger.error("Unhandled exception:\n" + e.toString + "\n" + stack)
