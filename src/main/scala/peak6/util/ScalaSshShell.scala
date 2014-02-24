@@ -43,9 +43,14 @@ trait Shell {
   def auth: PasswordAuthenticator
 
   var bindings: Seq[(String, String, Any)] = IndexedSeq()
+  var initCmds: Seq[String] = IndexedSeq()
 
   def bind[T: Manifest](name: String, value: T) {
-    bindings :+= (name, manifest[T].toString, value)
+    bindings :+= ((name, manifest[T].toString, value))
+  }
+
+  def addInitCommand(cmd: String) {
+    initCmds :+= cmd
   }
 
   lazy val sshd = {
@@ -153,7 +158,7 @@ trait Shell {
 
             il.printWelcome()
             try {
-              il.intp.initialize()
+              il.intp.initialize(())
               il.intp.beQuietDuring {
                 il.intp.bind("stdout", pw)
                 for ((bname, btype, bval) <- bindings)
@@ -166,6 +171,7 @@ trait Shell {
                 }""")
               il.intp.quietRun(
                 """def exit = println("Use ctrl-D to exit shell.")""")
+              initCmds.foreach(il.intp.quietRun)
 
               il.loop()
             } finally il.closeInterpreter()
