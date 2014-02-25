@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package peak6.util
+package com.wymanit.sshd
 
 object CrashingThread {
   def start(name: Option[String] = None,
@@ -29,17 +29,17 @@ object CrashingThread {
 class CrashingThread(name: Option[String], target: => Unit)
 extends Thread() with grizzled.slf4j.Logging {
   final override def run() {
-    name foreach { setName(_) }
+    name foreach { setName }
     try
       target
     catch {
       case e: Throwable =>
-	val stack = e.getStackTrace.foldLeft (new StringBuilder()) {
-	  (sb, f) =>
-	    sb.append("  ")
-	    sb.append(f.toString)
-            sb += '\n'
-	}.toString
+	val stack = e.getStackTrace.foldLeft(new StringBuilder()) {
+    (sb, f) =>
+      sb.append("  ")
+      sb.append(f.toString)
+      sb += '\n'
+  }.toString()
         logger.error("Unhandled exception:\n" + e.toString + "\n" + stack)
         System.exit(1)
     }

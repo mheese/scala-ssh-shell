@@ -10,9 +10,7 @@ import scala.tools.jline.SshTerminal
 import scala.tools.jline.console.ConsoleReader
 import scala.tools.jline.console.completer._
 import session._
-import scala.collection.JavaConverters._
 import Completion._
-import io.Streamable.slurp
 
 /**
  *  Reads from the console using JLine.
@@ -29,7 +27,7 @@ class JLineIOReader(in: java.io.InputStream,
 //    try KeyBinding parse slurp(term.getDefaultBindings)
 //    catch { case _: Exception => Nil }
 
-  private def term = consoleReader.getTerminal()
+  private def term = consoleReader.getTerminal
   def reset() = term.reset()
   def init()  = term.init()
 

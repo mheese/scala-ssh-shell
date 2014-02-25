@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-package peak6.util
+package com.wymanit.sshd
 
 import grizzled.slf4j.Logging
-import java.io.{BufferedReader, InputStreamReader, PrintWriter}
+import java.io.PrintWriter
 import org.apache.sshd.server.session.ServerSession
 import org.apache.sshd.common.keyprovider.AbstractKeyPairProvider
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider
@@ -47,7 +47,7 @@ trait Shell {
   var initCmds: Seq[String] = IndexedSeq()
 
   def bind[T: Manifest](name: String, value: T) {
-    bindings :+= ((name, manifest[T].toString, value))
+    bindings :+= ((name, manifest[T].toString(), value))
   }
 
   def addInitCommand(cmd: String) {

@@ -171,7 +171,7 @@ public class SshTerminal
         private static final Map<Short, UnixKey> codes;
 
         static {
-            Map<Short, UnixKey> map = new HashMap<Short, UnixKey>();
+            HashMap<Short, UnixKey> map = new HashMap<>();
 
             for (UnixKey key : UnixKey.values()) {
                 map.put(key.code, key);
