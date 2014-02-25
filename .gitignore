@@ -18,3 +18,5 @@ target/
 .settings
 .history
 .DS_Store
+authorized_keys
+test.ssh.keys

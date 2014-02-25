@@ -21,7 +21,7 @@ import java.io.PrintWriter
 import org.apache.sshd.server.session.ServerSession
 import org.apache.sshd.common.keyprovider.AbstractKeyPairProvider
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider
-import org.apache.sshd.server.{PasswordAuthenticator, Command}
+import org.apache.sshd.server.{PublickeyAuthenticator, PasswordAuthenticator, Command}
 import org.apache.sshd.common.util.KeyUtils.getKeyType
 import org.apache.sshd.common.Factory
 import scala.reflect._
@@ -29,7 +29,8 @@ import scala.tools.nsc.interpreter._
 import scala.concurrent._
 import ExecutionContext.Implicits.global
 import scala.tools.nsc.Settings
-
+import java.security.PublicKey
+import scala.io.Source
 class ScalaSshShell(
   val port: Int,
   val replName: String,
@@ -37,24 +38,52 @@ class ScalaSshShell(
   val passwd: String,
   val hostKeyResourcePath: Option[String],
   val host: Option[List[String]] = None,
+  val authorizedKeyResourcePath: Option[String] = None,
   val showScalaWelcomeMessage: Boolean = true,
   val additionalWelcomeMessage: Option[String] = None,
   val initialBindings: Option[List[(String, String, Any)]] = None,
   val initialCmds: Option[List[String]] = None,
   val usejavacp: Boolean = true
-) extends Shell {
-  lazy val pwAuth =
+) extends Shell with Logging {
+  val pwAuth =
     new PasswordAuthenticator {
       def authenticate(u: String, p: String, s: ServerSession) =
         u == user && p == passwd
     }
+  def noPkAuthenticator = new PublickeyAuthenticator {
+    override def authenticate(username: String, key: PublicKey, session: ServerSession): Boolean = false
+  }
+  val pkAuth: PublickeyAuthenticator = authorizedKeyResourcePath.map( resPath => {
+    val in = classOf[ScalaSshShell].getResourceAsStream(resPath)
+    if(in == null) noPkAuthenticator
+    else {
+      val akd = new AuthorizedKeysDecoder
+      val pubKeys: List[PublicKey] = Source.fromInputStream(in, "UTF-8").getLines().flatMap { line =>
+        try {
+          Some(akd.decodePublicKey(line))
+        } catch {
+          case _: Throwable => None
+        }
+      }.toList
+      logger.info(s"PublickeyAuthenticator has ${pubKeys.length} keys loaded")
+      new PublickeyAuthenticator {
+        override def authenticate(username: String, key: PublicKey, session: ServerSession): Boolean = {
+          user == username && pubKeys.contains(key)
+        }
+      }
+    }
+  }).getOrElse(
+    noPkAuthenticator
+  )
 }
 
 trait Shell {
   def port: Int
   def replName: String
   def hostKeyResourcePath: Option[String]
+  def authorizedKeyResourcePath: Option[String]
   def pwAuth: PasswordAuthenticator
+  def pkAuth: PublickeyAuthenticator
   def usejavacp: Boolean
   def host: Option[Seq[String]]
   def showScalaWelcomeMessage: Boolean
@@ -84,14 +113,16 @@ trait Shell {
     // mheese: setReuseAddress vanished from mina ... still no clue why and if we need it
     //x.setReuseAddress(true)
     x.setPasswordAuthenticator(pwAuth)
+    x.setPublickeyAuthenticator(pkAuth)
     x.setKeyPairProvider(keyPairProvider)
     x.setShellFactory(new ShellFactory)
     x
   }
   import scala.collection.JavaConversions._
+  def defaultKeyPairProvider = new SimpleGeneratorHostKeyProvider()
   lazy val keyPairProvider =
     hostKeyResourcePath.map {
-      case krp =>
+      krp =>
         // 'private' is one of the most annoying things ever invented.
         // Apache's sshd will only generate a key, or read it from an
         // absolute path (via a string, eg can't work directly on
@@ -102,17 +133,21 @@ trait Shell {
         // so we can parse the resource, and then impliment our own
         // instance of another so we can return it from loadKey(). What
         // a complete waste of time.
-        new AbstractKeyPairProvider {
-          val pair = new SimpleGeneratorHostKeyProvider() {
-            val in = classOf[ScalaSshShell].getResourceAsStream(krp)
-            val get = doReadKeyPair(in)
-          }.get
+        val in = classOf[ScalaSshShell].getResourceAsStream(krp)
+        if(in == null) defaultKeyPairProvider
+        else {
+          new AbstractKeyPairProvider {
+            val pair = new SimpleGeneratorHostKeyProvider() {
+              val in = classOf[ScalaSshShell].getResourceAsStream(krp)
+              val get = doReadKeyPair(in)
+            }.get
 
-          override def getKeyTypes = getKeyType(pair)
-          override def loadKey(s:String) = pair
-          def loadKeys() = Seq[java.security.KeyPair]()
+            override def getKeyTypes = getKeyType(pair)
+            override def loadKey(s:String) = pair
+            def loadKeys() = Seq[java.security.KeyPair]()
+          }
         }
-    }.getOrElse(new SimpleGeneratorHostKeyProvider())
+    }.getOrElse(defaultKeyPairProvider)
 
   class ShellFactory extends Factory[Command] {
     def create() =
@@ -191,7 +226,7 @@ trait Shell {
 
             if(showScalaWelcomeMessage) il.printWelcome()
             additionalWelcomeMessage foreach { welcomeMsg =>
-              pw.write(s"\n$welcomeMsg\n")
+              pw.write(s"\n$welcomeMsg\n\n")
               pw.flush()
             }
             try {
