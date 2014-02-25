@@ -30,10 +30,20 @@ import scala.concurrent._
 import ExecutionContext.Implicits.global
 import scala.tools.nsc.Settings
 
-class ScalaSshShell(val port: Int, val replName: String,
-                    val user: String, val passwd: String,
-                    val keysResourcePath: Option[String], val usejavacp: Boolean = true) extends Shell {
-  lazy val auth =
+class ScalaSshShell(
+  val port: Int,
+  val replName: String,
+  val user: String,
+  val passwd: String,
+  val hostKeyResourcePath: Option[String],
+  val host: Option[List[String]] = None,
+  val showScalaWelcomeMessage: Boolean = true,
+  val additionalWelcomeMessage: Option[String] = None,
+  val initialBindings: Option[List[(String, String, Any)]] = None,
+  val initialCmds: Option[List[String]] = None,
+  val usejavacp: Boolean = true
+) extends Shell {
+  lazy val pwAuth =
     new PasswordAuthenticator {
       def authenticate(u: String, p: String, s: ServerSession) =
         u == user && p == passwd
@@ -43,15 +53,24 @@ class ScalaSshShell(val port: Int, val replName: String,
 trait Shell {
   def port: Int
   def replName: String
-  def keysResourcePath: Option[String]
-  def auth: PasswordAuthenticator
+  def hostKeyResourcePath: Option[String]
+  def pwAuth: PasswordAuthenticator
   def usejavacp: Boolean
+  def host: Option[Seq[String]]
+  def showScalaWelcomeMessage: Boolean
+  def additionalWelcomeMessage: Option[String]
+  def initialBindings: Option[Seq[(String, String, Any)]]
+  def initialCmds: Option[Seq[String]]
 
   var bindings: Seq[(String, String, Any)] = IndexedSeq()
   var initCmds: Seq[String] = IndexedSeq()
 
   def bind[T: Manifest](name: String, value: T) {
     bindings :+= ((name, manifest[T].toString(), value))
+  }
+
+  def bind[T](name: String, boundType: String, value: T) {
+    bindings :+= ((name, boundType, value))
   }
 
   def addInitCommand(cmd: String) {
@@ -61,15 +80,17 @@ trait Shell {
   lazy val sshd = {
     val x = org.apache.sshd.SshServer.setUpDefaultServer()
     x.setPort(port)
+    host.foreach(hostList => x.setHost(hostList.mkString(",")))
+    // mheese: setReuseAddress vanished from mina ... still no clue why and if we need it
     //x.setReuseAddress(true)
-    x.setPasswordAuthenticator(auth)
+    x.setPasswordAuthenticator(pwAuth)
     x.setKeyPairProvider(keyPairProvider)
     x.setShellFactory(new ShellFactory)
     x
   }
   import scala.collection.JavaConversions._
   lazy val keyPairProvider =
-    keysResourcePath.map {
+    hostKeyResourcePath.map {
       case krp =>
         // 'private' is one of the most annoying things ever invented.
         // Apache's sshd will only generate a key, or read it from an
@@ -152,6 +173,11 @@ trait Shell {
             if(usejavacp) il.settings.usejavacp.value = true
             // some people say that the repl hangs when replsync is not set
             il.settings.Yreplsync.value = true
+            // Those three are my standard since scala 2.10
+            il.settings.feature.value = true
+            il.settings.deprecation.value = true
+            il.settings.unchecked.value = true
+            // create the interpreter now
             il.createInterpreter()
 
             // from this point, il.intp is available
@@ -163,7 +189,11 @@ trait Shell {
               return
             }
 
-            il.printWelcome()
+            if(showScalaWelcomeMessage) il.printWelcome()
+            additionalWelcomeMessage foreach { welcomeMsg =>
+              pw.write(s"\n$welcomeMsg\n")
+              pw.flush()
+            }
             try {
               il.intp.initialize(())
               il.intp.beQuietDuring {
@@ -196,6 +226,12 @@ trait Shell {
   }
 
   def start() {
+    initialBindings foreach { _ foreach { case (name, boundType, value) =>
+      this.bind(name, boundType, value)
+    }}
+    initialCmds foreach { _ foreach { cmd =>
+      this.addInitCommand(cmd)
+    }}
     sshd.start()
   }
 
@@ -208,7 +244,7 @@ object ScalaSshShell {
   def main(args: Array[String]) {
     val sshd = new ScalaSshShell(port=4444, replName="test", user="user",
                                  passwd="fluke",
-                                 keysResourcePath=Some("/test.ssh.keys"))
+                                 hostKeyResourcePath=Some("/test.ssh.keys"))
     sshd.bind("pi", 3.1415926)
     sshd.bind("nums", Vector(1,2,3,4,5))
     future {

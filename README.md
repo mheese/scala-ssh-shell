@@ -50,12 +50,12 @@ To run the included example, run the following with sbt 0.13.1:
     $ sbt update
     $ sbt compile
     $ sbt package
-    $ scala -cp "$(find lib_managed | grep jar$ | xargs echo | sed -e 's# #:#g'):./target/scala-2.10.3/scala-ssh-shell_2.10.3-0.0.1.jar" peak6.util.ScalaSshShell
+    $ scala -cp "$(find lib_managed | grep jar$ | xargs echo | sed -e 's# #:#g'):./target/scala-2.10.3/scala-ssh-shell_2.10.3-0.0.1.jar" com.wymanit.sshd.ScalaSshShell
 
 Now you can ssh in from a separate window, using "fluke" for the
 password:
 
-    sh -p 4444 user@127.0.0.1
+    ssh -p 4444 user@127.0.0.1
     Password authentication
     Password:
     Connected to test, starting repl...
