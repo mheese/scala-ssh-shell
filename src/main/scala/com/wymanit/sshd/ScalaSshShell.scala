@@ -22,14 +22,17 @@ import org.apache.sshd.server.session.ServerSession
 import org.apache.sshd.common.keyprovider.AbstractKeyPairProvider
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider
 import org.apache.sshd.server.{PasswordAuthenticator, Command}
+import org.apache.sshd.common.util.KeyUtils.getKeyType
 import org.apache.sshd.common.Factory
-import scala.reflect.Manifest
+import scala.reflect._
+import scala.tools.nsc.interpreter._
 import scala.concurrent._
 import ExecutionContext.Implicits.global
+import scala.tools.nsc.Settings
 
-class ScalaSshShell(val port: Int, val name: String,
+class ScalaSshShell(val port: Int, val replName: String,
                     val user: String, val passwd: String,
-                    val keysResourcePath: Option[String]) extends Shell {
+                    val keysResourcePath: Option[String], val usejavacp: Boolean = true) extends Shell {
   lazy val auth =
     new PasswordAuthenticator {
       def authenticate(u: String, p: String, s: ServerSession) =
@@ -39,9 +42,10 @@ class ScalaSshShell(val port: Int, val name: String,
 
 trait Shell {
   def port: Int
-  def name: String
+  def replName: String
   def keysResourcePath: Option[String]
   def auth: PasswordAuthenticator
+  def usejavacp: Boolean
 
   var bindings: Seq[(String, String, Any)] = IndexedSeq()
   var initCmds: Seq[String] = IndexedSeq()
@@ -83,7 +87,7 @@ trait Shell {
             val get = doReadKeyPair(in)
           }.get
 
-          //override def getKeyTypes() = getKeyType(pair)
+          override def getKeyTypes = getKeyType(pair)
           override def loadKey(s:String) = pair
           def loadKeys() = Seq[java.security.KeyPair]()
         }
@@ -134,23 +138,25 @@ trait Shell {
         }
 
         def start(env: org.apache.sshd.server.Environment) {
-          thread = CrashingThread.start(Some("ScalaSshShell-" + name)) {
+          thread = CrashingThread.start(Some("ScalaSshShell-" + replName)) {
             val pw = new PrintWriter(out)
             logger.info("New ssh client connected")
-            pw.write("Connected to %s, starting repl...\n".format(name))
+            pw.write("Connected to %s, starting repl...\n".format(replName))
             pw.flush()
 
-            val il = new scala.tools.nsc.interpreter.SshILoop(None, pw)
-            il.setPrompt(name + "> ")
-            il.settings = new scala.tools.nsc.Settings()
+            val il = new SshILoop(None, pw)
+            il.setPrompt(replName + "> ")
+            il.settings = new Settings()
             il.settings.embeddedDefaults(getClass.getClassLoader)
-            il.settings.usejavacp.value = true
+            // usejavacp must be false when started from within SBT
+            if(usejavacp) il.settings.usejavacp.value = true
+            // some people say that the repl hangs when replsync is not set
+            il.settings.Yreplsync.value = true
             il.createInterpreter()
 
-            il.in = new scala.tools.nsc.interpreter.JLineIOReader(
-              in,
-              out,
-              new scala.tools.nsc.interpreter.JLineCompletion(il.intp))
+            // from this point, il.intp is available
+            val completor = new JLineCompletion(il.intp)
+            il.in = new JLineIOReader(in, out, completor)
 
             if (il.intp.reporter.hasErrors) {
               logger.error("Got errors, abandoning connection")
@@ -200,7 +206,7 @@ trait Shell {
 
 object ScalaSshShell {
   def main(args: Array[String]) {
-    val sshd = new ScalaSshShell(port=4444, name="test", user="user",
+    val sshd = new ScalaSshShell(port=4444, replName="test", user="user",
                                  passwd="fluke",
                                  keysResourcePath=Some("/test.ssh.keys"))
     sshd.bind("pi", 3.1415926)
