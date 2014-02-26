@@ -17,13 +17,12 @@
 package com.wymanit.sshd
 
 import grizzled.slf4j.Logging
-import java.io.PrintWriter
+import java.io.{InputStreamReader, FileInputStream, PrintWriter}
 import org.apache.sshd.server.session.ServerSession
 import org.apache.sshd.common.keyprovider.AbstractKeyPairProvider
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider
 import org.apache.sshd.server.{PublickeyAuthenticator, PasswordAuthenticator, Command}
-import org.apache.sshd.common.util.KeyUtils.getKeyType
-import org.apache.sshd.common.Factory
+import org.apache.sshd.common.{KeyPairProvider, Factory}
 import scala.reflect._
 import scala.tools.nsc.interpreter._
 import scala.concurrent._
@@ -31,59 +30,94 @@ import ExecutionContext.Implicits.global
 import scala.tools.nsc.Settings
 import java.security.PublicKey
 import scala.io.Source
+import java.lang.Iterable
+
 class ScalaSshShell(
   val port: Int,
   val replName: String,
   val user: String,
-  val passwd: String,
-  val hostKeyResourcePath: Option[String],
+  val passwd: Option[String],
+  val hostKeyPath: Option[List[String]] = None,
   val host: Option[List[String]] = None,
-  val authorizedKeyResourcePath: Option[String] = None,
+  val authorizedKeysPath: Option[String] = None,
   val showScalaWelcomeMessage: Boolean = true,
   val additionalWelcomeMessage: Option[String] = None,
   val initialBindings: Option[List[(String, String, Any)]] = None,
   val initialCmds: Option[List[String]] = None,
   val usejavacp: Boolean = true
-) extends Shell with Logging {
-  val pwAuth =
-    new PasswordAuthenticator {
+) extends BouncyCastleProvider with Shell with Logging {
+
+  def authorizedKeysResourcePath = "/authorized_keys"
+  def hostKeyResourcePath = List("/ssh_host_dsa_key", "/ssh_host_ecdsa_key", "/ssh_host_rsa_key")
+
+  val pwAuth: Option[PasswordAuthenticator] = passwd.map { password =>
+    Some(new PasswordAuthenticator {
       def authenticate(u: String, p: String, s: ServerSession) =
-        u == user && p == passwd
-    }
-  def noPkAuthenticator = new PublickeyAuthenticator {
-    override def authenticate(username: String, key: PublicKey, session: ServerSession): Boolean = false
+        u == user && p == password
+    })
+  }.getOrElse {
+    logger.info("PasswordAuthenticator: disabling password authentication as no password has been provided!")
+    None
   }
-  val pkAuth: PublickeyAuthenticator = authorizedKeyResourcePath.map( resPath => {
-    val in = classOf[ScalaSshShell].getResourceAsStream(resPath)
-    if(in == null) noPkAuthenticator
-    else {
-      val akd = new AuthorizedKeysDecoder
-      val pubKeys: List[PublicKey] = Source.fromInputStream(in, "UTF-8").getLines().flatMap { line =>
-        try {
-          Some(akd.decodePublicKey(line))
-        } catch {
-          case _: Throwable => None
-        }
-      }.toList
-      logger.info(s"PublickeyAuthenticator has ${pubKeys.length} keys loaded")
-      new PublickeyAuthenticator {
+
+  val pkAuth: Option[PublickeyAuthenticator] = {
+
+    val akd = new AuthorizedKeysDecoder
+    def retrievePubKeys(is: java.io.InputStream): List[PublicKey] = Source.fromInputStream(is, "UTF-8").getLines().flatMap { line =>
+      try {
+        Some(akd.decodePublicKey(line))
+      } catch {
+        case e: Throwable =>
+          logger.warn(s"PublickeyAuthenticator: Skipping PublicKey because there was an error reading it: ${e.getMessage}")
+          None
+      }
+    }.toList
+
+    // All keys read from classpath resources
+    val resourceKeys: Option[List[PublicKey]] = {
+      val tmp = classOf[ScalaSshShell].getResourceAsStream(authorizedKeysResourcePath)
+      if(tmp == null) None
+      else Some(retrievePubKeys(tmp))
+    }
+
+    // All keys read from provided path
+    val providedKeys: Option[List[PublicKey]] = authorizedKeysPath.map { path =>
+      try {
+        Some(retrievePubKeys(new FileInputStream(path)))
+      } catch {
+        case e: Throwable =>
+          logger.warn(s"PublickeyAuthenticator: Skipping PublicKey from $path because there was an error reading it: ${e.getMessage}")
+          None
+      }
+    }.getOrElse(None)
+
+    // Merge the list
+    val pubKeys = List(resourceKeys, providedKeys).flatten.flatten
+    if(pubKeys.isEmpty) {
+      logger.info("PublickeyAuthenticator: no public keys were loaded. Disabling Publickey authentication.")
+      None
+    } else {
+      logger.info(s"PublickeyAuthenticator: has a total of ${pubKeys.length} keys loaded (${providedKeys.map(_.length.toString).getOrElse("None")} from provided path / ${resourceKeys.map(_.length.toString).getOrElse("None")} from classpath resources)")
+      Some(new PublickeyAuthenticator {
         override def authenticate(username: String, key: PublicKey, session: ServerSession): Boolean = {
           user == username && pubKeys.contains(key)
         }
-      }
+      })
     }
-  }).getOrElse(
-    noPkAuthenticator
-  )
+  }
+
+  if(pkAuth.isEmpty && pwAuth.isEmpty) throw ScalaSshShellInitializationException("At least one of PasswordAuthentication and PublickeyAuthentication needs to be enabled!")
 }
 
-trait Shell {
+trait Shell extends BouncyCastleProvider with Logging {
   def port: Int
   def replName: String
-  def hostKeyResourcePath: Option[String]
-  def authorizedKeyResourcePath: Option[String]
-  def pwAuth: PasswordAuthenticator
-  def pkAuth: PublickeyAuthenticator
+  def hostKeyPath: Option[List[String]]
+  def hostKeyResourcePath: List[String]
+  def authorizedKeysPath: Option[String]
+  def authorizedKeysResourcePath: String
+  def pwAuth: Option[PasswordAuthenticator]
+  def pkAuth: Option[PublickeyAuthenticator]
   def usejavacp: Boolean
   def host: Option[Seq[String]]
   def showScalaWelcomeMessage: Boolean
@@ -112,42 +146,66 @@ trait Shell {
     host.foreach(hostList => x.setHost(hostList.mkString(",")))
     // mheese: setReuseAddress vanished from mina ... still no clue why and if we need it
     //x.setReuseAddress(true)
-    x.setPasswordAuthenticator(pwAuth)
-    x.setPublickeyAuthenticator(pkAuth)
+    pwAuth.foreach(pwA => x.setPasswordAuthenticator(pwA))
+    pkAuth.foreach(pkA => x.setPublickeyAuthenticator(pkA))
     x.setKeyPairProvider(keyPairProvider)
     x.setShellFactory(new ShellFactory)
     x
   }
-  import scala.collection.JavaConversions._
-  def defaultKeyPairProvider = new SimpleGeneratorHostKeyProvider()
-  lazy val keyPairProvider =
-    hostKeyResourcePath.map {
-      krp =>
-        // 'private' is one of the most annoying things ever invented.
-        // Apache's sshd will only generate a key, or read it from an
-        // absolute path (via a string, eg can't work directly on
-        // resources), but they do privide protected methods for reading
-        // from a stream, but not into the internal copy that gets
-        // returned when you call loadKey(), which is of course privite
-        // so there is no way to copy it. So we construct one provider
-        // so we can parse the resource, and then impliment our own
-        // instance of another so we can return it from loadKey(). What
-        // a complete waste of time.
-        val in = classOf[ScalaSshShell].getResourceAsStream(krp)
-        if(in == null) defaultKeyPairProvider
-        else {
-          new AbstractKeyPairProvider {
-            val pair = new SimpleGeneratorHostKeyProvider() {
-              val in = classOf[ScalaSshShell].getResourceAsStream(krp)
-              val get = doReadKeyPair(in)
-            }.get
 
-            override def getKeyTypes = getKeyType(pair)
-            override def loadKey(s:String) = pair
-            def loadKeys() = Seq[java.security.KeyPair]()
-          }
-        }
-    }.getOrElse(defaultKeyPairProvider)
+  val keyPairProvider: KeyPairProvider = {
+    import scala.collection.JavaConversions._
+    import java.security.KeyPair
+    import org.bouncycastle.openssl._
+    import org.bouncycastle.openssl.jcajce._
+
+    def defaultKeyPairProvider = new SimpleGeneratorHostKeyProvider()
+    val converter = new JcaPEMKeyConverter()
+    def readKeyPair(is: java.io.InputStream): Option[KeyPair] = {
+      try {
+        val pemParser = new PEMParser(new InputStreamReader(is))
+        val pemKeyPair = pemParser.readObject().asInstanceOf[PEMKeyPair]
+        Some(converter.getKeyPair(pemKeyPair))
+      } catch {
+        case e: Throwable =>
+          logger.warn(s"HostKeyPairProvider: Skipping Host KeyPair because there was an error while trying to read it: ${e.getMessage}")
+          None
+      }
+    }
+
+    // All host keys loaded from classpath resources
+    val resourceKeys: List[KeyPair] = hostKeyResourcePath.map { path =>
+      val tmp = classOf[ScalaSshShell].getResourceAsStream(path)
+      if(tmp == null) None
+      else {
+        readKeyPair(tmp)
+      }
+    }.flatten
+
+    // All host keys loaded from provided resources
+    val providedKeys: List[KeyPair] = hostKeyPath.map(_.map { path =>
+      try {
+        readKeyPair(new FileInputStream(path))
+      } catch {
+        case e: Throwable =>
+          logger.warn(s"HostKeyPairProvider: Skipping Host KeyPair from $path because there was an error reading it: ${e.getMessage}")
+          None
+      }
+    }).getOrElse(Nil).flatten
+
+    // Merge the list
+    val keys: List[KeyPair] = resourceKeys ::: providedKeys
+    if(keys.isEmpty) {
+      logger.info("HostKeyPairProvider: No Host KeyPairs were loaded. Falling back to SimpleGeneratorHostKeyProvider to generate keys for you.")
+      defaultKeyPairProvider
+    }
+    else {
+      logger.info(s"HostKeyPairProvider: has a total of ${keys.length} host KeyPairs loaded (${providedKeys.length} from provided paths / ${resourceKeys.length} from classpath resources)")
+      new AbstractKeyPairProvider {
+        override def loadKeys(): Iterable[KeyPair] = keys
+      }
+    }
+  }
 
   class ShellFactory extends Factory[Command] {
     def create() =
@@ -278,8 +336,7 @@ trait Shell {
 object ScalaSshShell {
   def main(args: Array[String]) {
     val sshd = new ScalaSshShell(port=4444, replName="test", user="user",
-                                 passwd="fluke",
-                                 hostKeyResourcePath=Some("/test.ssh.keys"))
+                                 passwd=Some("fluke"))
     sshd.bind("pi", 3.1415926)
     sshd.bind("nums", Vector(1,2,3,4,5))
     future {
