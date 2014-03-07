@@ -20,3 +20,4 @@ target/
 .DS_Store
 authorized_keys
 test.ssh.keys
+ssh_host_*_key
